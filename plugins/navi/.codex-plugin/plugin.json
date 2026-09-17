@@ -1,0 +1,28 @@
+{
+  "name": "navi",
+  "version": "0.1.0-alpha.1",
+  "description": "Experimental task-scope records, bounded independent review, Agent advisories and user-selected text rollback for Codex.",
+  "author": {
+    "name": "davinh47",
+    "url": "https://github.com/davinh47"
+  },
+  "interface": {
+    "displayName": "Navi",
+    "shortDescription": "Lightweight scope supervision with evidence reports.",
+    "longDescription": "Keeps cited task and phase memory. Optional asynchronous Luna reviews share a bounded budget and advise the executing Agent without blocking. Explicit file checks and optional historical local tool/plan checks remain experimental. User reports preserve uncertainty; selected text rollback requires a reviewed preview and user confirmation. No automatic rollback.",
+    "developerName": "davinh47",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use Navi to monitor task scope and report findings. Do not block execution or automatically roll back changes.",
+    "websiteURL": "https://github.com/davinh47/Navi"
+  },
+  "homepage": "https://github.com/davinh47/Navi",
+  "repository": "https://github.com/davinh47/Navi",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "coding-agent",
+    "scope-drift",
+    "developer-tools"
+  ]
+}
