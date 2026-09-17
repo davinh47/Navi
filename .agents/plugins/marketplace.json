@@ -1,0 +1,20 @@
+{
+  "name": "navi",
+  "interface": {
+    "displayName": "Navi"
+  },
+  "plugins": [
+    {
+      "name": "navi",
+      "source": {
+        "source": "local",
+        "path": "./plugins/navi"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

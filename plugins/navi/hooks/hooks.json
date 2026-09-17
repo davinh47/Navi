@@ -1,0 +1,82 @@
+{
+  "description": "Navi opt-in recording and experimental background scope review. Hooks never wait for models or deny tools.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if python3 \"${PLUGIN_ROOT}/scripts/record_event.py\"; then :; else printf '{}\\n'; fi",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if python3 \"${PLUGIN_ROOT}/scripts/record_event.py\"; then :; else printf '{}\\n'; fi",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if python3 \"${PLUGIN_ROOT}/scripts/record_event.py\"; then :; else printf '{}\\n'; fi",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if python3 \"${PLUGIN_ROOT}/scripts/record_event.py\"; then :; else printf '{}\\n'; fi",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if python3 \"${PLUGIN_ROOT}/scripts/record_event.py\"; then :; else printf '{}\\n'; fi",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if python3 \"${PLUGIN_ROOT}/scripts/record_event.py\"; then :; else printf '{}\\n'; fi",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if python3 \"${PLUGIN_ROOT}/scripts/record_event.py\"; then :; else printf '{}\\n'; fi",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
