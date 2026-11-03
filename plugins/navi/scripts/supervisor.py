@@ -88,9 +88,19 @@ def runtime_status(data,state,path):
     if state.get('context_sync',{}).get('status')=='unavailable':reasons.append('context_sync_unavailable')
     gate=budget.review_gate(state)
     if gate:reasons.append(gate['reason'])
+    config=state.get('supervisor',{})
+    dispatch_error=config.get('last_dispatch_error')
+    if not config.get('worker'):
+        if dispatch_error:
+            reasons.append(dispatch_error['reason'])
+        elif config.get('last_status') in ('unavailable_no_retry','spawn_failed','context_sync_unavailable_no_model_call'):
+            reasons.append('previous_dispatch_failed')
     jobs=state.get('reviews',{})
     old=state.get('review_rollup',{})
+    completed=[j.get('finished_at',j.get('created_at',0)) for j in jobs.values() if j.get('status')=='completed']
     return {'eligible':not reasons,'unavailable_reasons':reasons,
+        'last_dispatch_error':dispatch_error,
+        'last_completed_review_at':max(completed+[state.get('last_completed_review_at',0)]) or None,
         'model_calls_started':old.get('started',0)+sum(j.get('status') in ('running','completed','failed') and j.get('error_type')!='SpawnError' for j in jobs.values()),
         'reviews_completed':old.get('completed',0)+sum(j.get('status')=='completed' for j in jobs.values()),
         'history_gaps':state.get('history',{}).get('gaps',[]) if 'history_not_ready' in reasons else [],
@@ -103,6 +113,14 @@ def scheduling_limits(state):
 
 
 def candidate(state):
+    value=_candidate(state)
+    if value:
+        value['identity']=digest([value['identity'], review.support_digest(state),
+                                 review.packet_context.project_guidance(state)])
+    return value
+
+
+def _candidate(state):
     basis = actions.file_basis(state)
     context = user_context_digest(state)
     for entry in state.get('reminder_transport', {}).get('entries', {}).values():
@@ -136,7 +154,11 @@ def file_evidence(state):
 
 def snapshot_reviewed(state, basis):
     """A followup also evaluates scope: do not reclassify its unchanged snapshot at Stop."""
+    support=review.support_digest(state)
+    guidance=digest(review.packet_context.project_guidance(state))
     return any(not j.get('activity_basis') and j.get('file_basis')==basis and j.get('context_digest')==user_context_digest(state)
+               and j.get('prompt_version',review.PROMPT_VERSION)==review.PROMPT_VERSION
+               and j.get('support_digest',support)==support and j.get('project_guidance_digest',guidance)==guidance
                and j.get('supervision_generation')==state['supervisor']['generation']
                for j in state.get('reviews',{}).values())
 
@@ -191,7 +213,7 @@ def on_hook(data, payload, launcher=launch):
         actions.refresh(state)
         supervisor = state['supervisor']
         current = candidate(state)
-        if (not current or current['identity']==supervisor['last_attempt']
+        if (not current or current['identity']==supervisor['last_attempt'] and supervisor.get('last_attempt_version')==review.PROMPT_VERSION
                 or current['kind']=='detect' and snapshot_reviewed(state,current['basis'])):
             save(path,state)
             return
@@ -212,6 +234,7 @@ def on_hook(data, payload, launcher=launch):
             return
         token = digest([state['task_id'],now,supervisor['generation'],supervisor['dispatches']])[:24]
         supervisor.update(last_attempt=current['identity'], last_dispatch_at=now, dispatches=supervisor['dispatches']+1,
+            last_attempt_version=review.PROMPT_VERSION,
             dispatch_times=(supervisor.get('dispatch_times',[])+[now])[-48:],
             worker={'token':token, 'created_at':now, 'trigger':payload['hook_event_name'], 'transcript_path':payload.get('transcript_path')}, last_status='dispatched')
         save(path,state)
@@ -221,13 +244,17 @@ def on_hook(data, payload, launcher=launch):
         finish_dispatch(data,session,token,'spawn_failed')
 
 
-def finish_dispatch(data, session, token, status):
+def finish_dispatch(data, session, token, status, error=None):
     with locked(data,session) as (path,state):
         if state is None:
             return
         supervisor=state.get('supervisor',{})
         if supervisor.get('worker',{} ) and supervisor['worker']['token']==token:
             supervisor.update(worker=None,last_status=status)
+            if error:
+                supervisor['last_dispatch_error']={'model_call_started':False, **error,'at':time.time()}
+            elif status=='review_finished':
+                supervisor.pop('last_dispatch_error',None)
             if status in ('review_in_progress','review_budget_exhausted'):
                 supervisor['last_attempt']=None
             save(path,state)
@@ -343,6 +370,8 @@ def worker(data, session, token, runner=review.run_model, delay=COALESCE_SECONDS
     if delay:
         time.sleep(delay)
     outcome='no_current_review'
+    diagnostics=None
+    stage='preflight'
     try:
         from context_sync import synchronize
         with locked(data,session) as (_,state):
@@ -360,16 +389,20 @@ def worker(data, session, token, runner=review.run_model, delay=COALESCE_SECONDS
                 entry=state['reminder_transport']['entries'][job['followup']['reminder_id']]
                 entry['followup_job']=key
                 save(path,state)
+        stage='review_or_delivery'
         if new:
             review.worker(data,session,key,runner)
         consume(data,session,key)
         outcome='review_finished'
     except budget.ReviewDeferred as deferred:
         outcome=str(deferred)
-    except (OSError,ValueError,TypeError,KeyError):
+    except (OSError,ValueError,TypeError,KeyError) as error:
         outcome='unavailable_no_retry'
+        diagnostics=(error.diagnostics if isinstance(error,review.packet_context.PacketCapacityError)
+                     else {'reason':'review_preflight_failed' if stage=='preflight' else 'review_postprocessing_failed',
+                           'error_type':type(error).__name__, 'model_call_started':False if stage=='preflight' else None})
     finally:
-        finish_dispatch(data,session,token,outcome)
+        finish_dispatch(data,session,token,outcome,diagnostics)
 
 
 def status(data,session):

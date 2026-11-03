@@ -49,6 +49,13 @@ class ReportTests(unittest.TestCase):
     def repository(self):
         self.git('init','-q');self.git('add','part.txt');self.git('commit','-qm','fixture baseline')
 
+    def test_summary_discloses_sync_reason_and_unreviewed_images(self):
+        state=self.state();state['context_sync']={'status':'unavailable','reason':'history_base_missing_or_ambiguous',
+            'unreviewed_images':2};self.save(state)
+        summary=report.generate(self.data,self.session)['user_summary']
+        self.assertIn('history\\_base\\_missing\\_or\\_ambiguous',summary)
+        self.assertIn('2 张未做视觉审查',summary)
+
     def test_preexisting_git_difference_is_separate_from_later_change(self):
         self.repository();self.file.write_text('existing edit\n');self.enable()
         self.file.write_text('later edit\n');r=report.generate(self.data,self.session);f=r['files'][0]
@@ -220,9 +227,36 @@ class ReportTests(unittest.TestCase):
         rendered=report.generate(self.data,self.session)['user_summary']
         self.assertIn('保留 0 条',rendered)
         self.assertIn('不代表整轮任务通过',rendered)
-        self.assertIn('累计尝试 2 次；保留记录中确认接收 0 次',rendered)
+        self.assertIn('累计尝试 2 次；保留记录中已发出 0 次、Agent 已回应 0 次',rendered)
         unavailable=report.generate(self.data,'absent')['user_summary']
         self.assertIn('任务记录不可用',unavailable)
+
+    def test_agent_dispute_is_reported_separately_from_external_receipt_and_correction(self):
+        self.enable();self.make_job()
+        s=self.state();source=s['sources'][0]
+        # Use real reminder transport operations rather than inventing delivery state.
+        reminders.configure(self.data,self.session,True)
+        reminders.on_hook(self.data,{'session_id':self.session,'turn_id':'t1','hook_event_name':'UserPromptSubmit'})
+        s=self.state()
+        value={'user_context_digest':tasks.user_context_digest(s),'action_version':actions.version(s),
+            'source_ids':[source['id']],'requirement':'Title only','evidence':'Observed change',
+            'suggestion':'Check current scope'}
+        key=reminders.enqueue(s,value,'independent_review','t1')
+        self.save(s)
+        reminders.on_hook(self.data,{'session_id':self.session,'turn_id':'t1','hook_event_name':'PreToolUse','tool_use_id':'next'})
+        reminders.respond(self.data,self.session,{'id':key,'user_context_digest':tasks.user_context_digest(self.state()),
+            'disposition':'disputed','reason':'Necessary maintenance.','citations':[]})
+        result=report.generate(self.data,self.session)
+        self.assertIn('已发出 1 次、Agent 已回应 1 次（其中提出异议 1 次）、外部接收证据 0 次',result['user_summary'])
+        self.assertIn('未验证因提醒而纠正',result['user_summary'])
+        self.assertIn('最近完成评估：',result['user_summary'])
+
+    def test_recorded_only_and_paused_reports_do_not_read_project_guidance(self):
+        self.enable();self.make_job()
+        with patch('review_context.snapshot',side_effect=AssertionError('must not read workspace')):
+            report.generate(self.data,self.session,recorded_only=True)
+            (self.data/'disabled').touch()
+            report.generate(self.data,self.session)
 
     def test_brief_bounds_finding_details_and_escapes_evidence(self):
         self.enable();job=self.make_job(labels=['scope_reduction'])

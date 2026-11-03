@@ -1,6 +1,7 @@
 # Local interfaces
 
-Invoke scripts with Python 3.9+; no dependencies. Paths below are relative to plugin root.
+Invoke scripts with Python 3.9+. Compressed host history additionally needs `zstd` on PATH; no Python
+packages are required. Paths below are relative to plugin root.
 Every command needs `--data-directory ABS`; task commands also need `--session ACTUAL_SESSION_ID`.
 
 ## First activation of the current task
@@ -189,7 +190,12 @@ dropping old requirements; `capture_gap` means the full current scope is not kno
 ```
 
 Mark `coverage` as `partial` if evidence is incomplete. Never replace missing tool output with invented facts.
-Packet cap is 64 KiB including all user sources. Oversized packets are unavailable, not silently truncated.
+Packet cap is 64 KiB including all user sources. Capacity fitting preserves user originals verbatim,
+omits optional supporting records and then whole older actions with explicit `packet_selection` metadata,
+and marks coverage partial. If originals plus minimum evidence cannot fit, the dispatch is unavailable
+with `review_packet_capacity`; no model call or reservation occurs. Reports expose that failure.
+Enabled observation includes bounded workspace-root AGENTS.md, AGENTS.override.md and CLAUDE.md
+(8 KiB each, no symlinks/parent/nested search) as untrusted supporting evidence, never user authority.
 Origin must identify how evidence was obtained; a self-reported diff is not independently verified provenance.
 
 - `scripts/review.py status`: results, usage, freshness and failures. Repeated identical submissions use the same job; no new model call.
@@ -403,6 +409,28 @@ judgments. The mode is experimental and does not establish general detector accu
 
 ## Long-task recovery and scheduling
 
+Native paginated logs follow declared `history_base` segments, including `.jsonl.zst` archives. Use
+the normal `context_sync.py sync` operation to recover an existing task after an adapter update;
+do not reset state, budgets or history interpretation. Missing ancestors, incompatible source identity
+or unproven ordering remain errors. Chain scans allow 32 segments / 512 MiB / a 60-second scan deadline
+with each decoder limited to 30 seconds. Subsequent reads resume the active segment. Local raw-context
+storage allows 256 KiB; optional history interpretation and each independent review remain at 64 KiB.
+Mixed image/text messages preserve textual requirements and report `unreviewed_images`; never claim
+the images were inspected. Image-only requirements remain unavailable. Page and validated harness
+goal-status context cannot expand user authorization. Report the exact sync error if recovery fails.
+
+Several distinct user inputs can share one execution turn. They retain their separate sources and
+order when synchronized; do not merge them, drop a supplemental constraint, or ask the user to resend
+them to create new turns. After updating a plugin that reported `ambiguous_live_turn` for this case,
+resume with `context_sync.py sync --data-directory ABS --session ID --transcript-path ABS` using the
+existing state and cursor. Genuine overlap/order conflicts still report an unavailable context.
+
+Native goal continuation (`goal.internal_context`) is supported as non-authoritative host context;
+it must not be treated as a new user grant. If an older plugin stopped synchronization at this record,
+after updating use normal `context_sync.py sync --data-directory ABS --session ID --transcript-path ABS`
+to resume the saved cursor. Do not reimport history, reactivate it, or reset budgets for this case.
+Real later user amendments remain authoritative; unknown content kinds still report a context gap.
+
 Use the host-provided data directory and the exact session. A known transcript path may be recovered
 explicitly with `history.py recover --data-directory ABS --session ID --transcript-path ABS`; this is
 recorded as local recovery, not a host Hook. It checks file/session identity and does not search other tasks.
@@ -449,11 +477,12 @@ activity checks may still assess bounded tool attempts, with unknown final file 
 
 After initial history activation, UserPromptSubmit/Stop/SessionStart hooks launch local asynchronous
 context synchronization; automatic review workers also synchronize before reserving a model call.
-Only this session's host-supplied transcript is read. New records are parsed from a persisted cursor;
+Only this session's host-supplied transcript and its declared ancestry are read. New records are parsed from a persisted cursor;
 the older prefix is hashed locally to detect rewriting. Snapshots without a cursor bootstrap the parser once.
 There are zero new history model calls. No tool denial, actor waiting, forced turns or budget resets.
 Known gaps defer evaluation, while recording and the main task continue. A later complete boundary
-can recover transient partial-line gaps. File replacement/rewriting requires explicit investigation.
+can recover transient partial-line gaps. Validated native segment rotation can recover automatically;
+unexplained file replacement/rewriting requires explicit investigation.
 
 `python3 scripts/context_sync.py status --data-directory ABS --session ACTUAL_SESSION_ID`
 shows status, last refresh, synchronized byte position and error reason. For explicitly authorized
@@ -479,3 +508,8 @@ is at most 4 KiB. Empty citations are permitted for uncertainty or a factual res
 new authority. Exact resubmission is idempotent. Only the latest response per reminder is retained.
 Responses appear in reports and the next ordinary review (most recent four, up to 6 KiB, omissions
 reported). They never trigger a review, modify the verdict, confirm external delivery or reset budgets.
+
+Report receipt counts separately: emitted notices, agent responses (including disputes), and external
+observer evidence. A saved agent response does not change the external confirmation flag and does not
+verify causal correction. Use the generated brief rather than interpreting an external count of zero
+as failure to receive. Preserve real failed/cancelled calls and all cumulative counters during recovery.

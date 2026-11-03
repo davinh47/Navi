@@ -9,10 +9,12 @@ the main agent continues while the evaluator runs.
 | `record_event.py` | Normalize supported hooks; record bounded metadata; dispatch local handlers |
 | `task_state.py` | Opt-in user sources, cited intent proposals, per-conversation state and budgets |
 | `history.py` / `context_sync.py` | Read canonical same-session text; verify source identity and incrementally parse additions |
+| `transcript_chain.py` | Validate paginated same-session ancestry and compressed archives; resume the current segment |
 | `history_context.py` | Join imported/live sources; bounded assistant context; optional one-call history interpretation |
 | `action_evidence.py` / `change_baseline.py` | Bounded tool observations, explicit file snapshots and change provenance |
 | `supervisor.py` / `activity_scope.py` | Select evidence checkpoints, enforce spacing/shared concurrency, and schedule independent evaluation |
 | `review.py` | Isolated `codex exec`, structured scope/risk output, source/action citation validation |
+| `review_context.py` | Bounded root project guidance and capacity-aware evidence selection; user originals stay intact |
 | `reminders.py` | Non-blocking advisory delivery, expiry, deduplication and optional agent responses |
 | `report.py` / `rollback.py` | Deterministic reports; separately confirmed selective text rollback |
 
@@ -72,9 +74,35 @@ Imported sources retain provenance and cannot become fresh rollback consent. Use
 and assistant-support versions are tracked separately: a new progress note must not detach existing
 observations from the user requirements that applied when they were recorded.
 
+A Codex execution turn may contain several user messages, including input submitted while the agent
+is running. History/live overlap matching uses the turn and exact original text together, then verifies
+the live-source order. Distinct messages in the same turn retain separate source IDs; a pending live
+message is included once while its transcript event catches up. Conflicting text, reordered overlaps,
+or repeated identical messages whose live-source mapping is ambiguous still fail explicitly.
+
 The reader checks transcript identity, canonical event types, supported compaction continuity and
 file-prefix consistency. It parses new records from a persisted cursor, but still reads old bytes
 locally for integrity hashing. It is not a generic parser for every past/future Codex transcript format.
+
+For native paginated history, `transcript_chain` follows only declared `history_base` references inside
+the session store. It checks session identity, contiguous ordinals, byte boundaries and preserved user
+originals before replacing a cursor. Compressed `.jsonl.zst` ancestors use the local `zstd` executable
+and private temporary files. A new segment rebuilds the bounded chain once; subsequent reads resume
+the current segment. Missing ancestors, cycles, changed requirements and broken boundaries fail visibly.
+Host restarts may exclude a submitted turn and replay it in the new segment: verified excluded-message
+identities reconcile only already-captured live inputs, never import extra branch history as authority.
+
+Text accompanying a local image is retained; image bytes are not read or sent for visual review.
+Reports disclose the unreviewed image count. Image-only requirements remain unavailable. Recognized
+Page context and harness-origin goal-status records are non-authoritative host context.
+Raw local context may occupy 256 KiB; optional history-model requests and review packets still cap at
+64 KiB each. Packet fitting removes redundant source-hash indexes before sacrificing actual evidence.
+
+Native `goal.internal_context` records are recognized as host context, not new user authorization.
+Their repeated objectives do not amend scope. Recognition uses the host's content-kind metadata,
+not message-text matching; genuine subsequent user messages still update the ordered authority.
+An existing incremental cursor can resume after this compatibility fix without reimporting history
+or resetting budgets. Unknown content kinds still produce an explicit context gap.
 
 ## Scheduling and delivery
 
@@ -114,3 +142,23 @@ advisory responses and reports. A future adapter must establish its own native p
 semantics rather than treating plain text as trusted user input.
 
 [Limits](LIMITATIONS.md) · [Privacy](PRIVACY.md) · [Validation](VALIDATION.md)
+
+## Review preparation and recovery
+
+`review.make_packet` joins user originals, role-separated conversation support, bounded root project
+guidance and observations. `review_context.fit` keeps the complete packet within 64 KiB by dropping
+optional support before whole action records; omissions are explicit and coverage becomes partial.
+Insufficient space for originals and minimum action evidence raises a typed capacity error before
+reservation. `supervisor.worker` persists safe error diagnostics; readiness/reporting expose them.
+A changed prompt version allows an old failed candidate to be attempted once at an eligible boundary,
+without resetting usage or retrying unchanged failures indefinitely. Success clears the dispatch error.
+
+Project guidance has observed-file provenance, unknown authorship and unverified host applicability.
+It is counterevidence for ordinary maintenance requirements, never permission to expand user scope.
+Changes invalidate queued reviews and pending notices based on the old guidance. Raw user constraints
+still win; an agent plan or an edited rules file cannot authorize future work.
+
+Structured reviewer output constrains citation IDs to the supplied evidence (up to 288 distinct IDs);
+local validation still requires both a user source and an action from the correct case on each axis.
+Larger authored batches retain local validation without the dynamic ID enum. Invalid output remains a
+failed call with usage retained; no citation is guessed, repaired or promoted into a valid result.

@@ -12,8 +12,8 @@ sys.path.insert(0, str(ROOT / 'plugins/navi/scripts'))
 import review
 
 
-def cases():
-    values=json.loads((ROOT/'evals/delivery_cases.json').read_text())['cases']
+def cases(path=None):
+    values=json.loads((path or ROOT/'evals/delivery_cases.json').read_text())['cases']
     ids=[c['packet']['case_id'] for c in values]
     if len(ids)!=len(set(ids)):
         raise ValueError('duplicate delivery cases')
@@ -40,7 +40,8 @@ def main():
     parser.add_argument('--model',default=review.MODEL)
     parser.add_argument('--effort',default=review.EFFORT)
     parser.add_argument('--output',type=Path)
-    args=parser.parse_args();selected=cases()
+    parser.add_argument('--cases',type=Path,help='Authored replay cases; expected answers stay outside model input')
+    args=parser.parse_args();selected=cases(args.cases)
     if not args.live:
         print(json.dumps({'cases':len(selected),'model_calls':0,'live_calls_if_requested':1}))
         return

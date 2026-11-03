@@ -107,6 +107,7 @@ def review_rows(state, gap, revalidated):
         evidence=[dict(s,kind='user_source') for s in packet.get('user_sources',[]) if s['id'] in cited]
         evidence += [a for a in packet.get('actions',[]) if a['id'] in cited]
         rows.append({'id':key,'status':job['status'],'purpose':'followup' if job.get('followup') else 'review',
+            'packet_selection':(packet.get('interpretation') or {}).get('packet_selection'),
             'freshness':freshness,'freshness_reasons':reasons,'coverage':packet.get('coverage','unknown'),
             'scope':({k:result.get(k) for k in ('verdict','scope_labels','evidence_ids','reason')} if result else None),
             'implementation_risk':result.get('implementation_risk') if result else None,
@@ -152,6 +153,7 @@ def build(state, gap=False, revalidated=False, recording_allowed=False):
             followup={**check,'freshness':'stale' if gap or obsolete else ('current' if revalidated else 'not_revalidated'),
                       'causal_adoption':'not_established'}
         notices.append({'id':key,'origin':entry['origin'],'status':entry['status'],
+            'emitted_at':entry.get('emitted_at'),
             'current_validity':'stale' if gap or stale else ('historical_observations' if entry.get('activity_basis') else ('current' if revalidated else 'not_revalidated')),
             'reason':entry.get('reason') or stale,'delivery':entry.get('delivery','unconfirmed'),
             'receipt_provenance':entry.get('receipt',{}).get('origin'),'adoption':entry.get('adoption','not_assessed'),
@@ -287,7 +289,11 @@ def brief(report):
         'recording_or_input_capture_disabled':'记录或输入采集未启用', 'capture_gap':'存在采集缺口',
         'action_capture_disabled':'动作采集未启用', 'supervisor_disabled':'自动监督未启用',
         'reminders_disabled':'提醒未启用', 'history_not_ready':'历史上下文不可用',
-        'context_sync_unavailable':'增量同步不可用'}
+        'context_sync_unavailable':'增量同步不可用',
+        'review_packet_capacity':'评估材料超过容量，未调用模型',
+        'review_preflight_failed':'评估准备失败，未调用模型',
+        'review_postprocessing_failed':'评估或结果处理失败，请核对评估记录及用量',
+        'previous_dispatch_failed':'上次调度失败，尚无成功恢复记录'}
     runtime=report.get('runtime',{});blocks=runtime.get('unavailable_reasons',[])
     if runtime.get('eligible'):
         status='可调度（有新证据且满足间隔时评估）'
@@ -319,6 +325,18 @@ def brief(report):
         '  - 完成结果：当前有效 '+str(fresh['current'])+'、过期 '+str(fresh['stale'])+'、历史活动 '+str(fresh['historical_observations'])+'、未复核 '+str(fresh['not_revalidated'])+'。',
         '- 发现：当前有效结果中，范围偏移 '+str(scope)+'、实现风险 '+str(risk)+'、范围判断不确定 '+str(uncertain)+'；这些计数可重叠。']
     lines[5:5]=final_wait_lines(report)
+    last=runtime.get('last_completed_review_at')
+    lines.append('- 最近完成评估：'+(when(last) if last else '没有可用记录')+'；不代表覆盖本轮工作。')
+    sync=report.get('incremental_context',{})
+    if sync.get('reason'):
+        lines.append('- 上下文同步错误：'+safe(sync['reason'])+'。')
+    if sync.get('unreviewed_images'):
+        lines.append('- 上下文图片：'+str(sync['unreviewed_images'])+' 张未做视觉审查；保留文字要求，图片内容不视为已核验。')
+    error=runtime.get('last_dispatch_error')
+    if error:
+        detail=('；材料 '+str(error['packet_bytes'])+' 字节 / 上限 '+str(error['limit_bytes'])+' 字节'
+                if error.get('packet_bytes') is not None else '；错误类型 '+safe(error.get('error_type')))
+        lines.append('- 最近调度错误：'+when(error['at'])+'；'+safe(reasons.get(error['reason'],error['reason']))+detail+'。')
     findings=[r for r in completed if (r['scope'] and (r['scope']['verdict']=='drift' or
               r['scope']['verdict']=='uncertain' and review.DELIVERY_LABELS.intersection(r['scope']['scope_labels'])))
               or r['implementation_risk'] and r['implementation_risk']['verdict']=='concern']
@@ -346,12 +364,25 @@ def brief(report):
                              '、'.join(snapshot_reasons.get(k,k)+' '+str(v)+' 个' for k,v in sorted(unreadable.items()))+'）')
     if c['dropped_tool_events']:gaps.append('累计已移出 '+str(c['dropped_tool_events'])+' 条工具事件')
     if c['truncated_tool_events']:gaps.append('保留工具事件中 '+str(c['truncated_tool_events'])+' 条内容被截断')
+    fitted=sum(bool(r.get('packet_selection')) for r in rows)
+    if fitted:gaps.append('保留评估中 '+str(fitted)+' 条因材料容量删减辅助上下文或动作，用户原文保留')
     activity='开启有界工具活动观察' if config.get('include_activity') else '未开启工具活动观察'
     lines+=['- 覆盖：指定观察文件 '+str(len(paths))+' 个'+('（'+names+'）' if names else '')+'；'+activity+'。缺口：'+'；'.join(gaps)+'。',
-        '- 提醒：累计尝试 '+str(b['reminders_used'])+' 次；保留记录中确认接收 '+str(sum(n['delivery']=='confirmed_by_external_test_observer' for n in report['reminders']))+' 次；不代表已纠正。',
+        reminder_summary(report),
         '- 用量：累计已取得的独立评估输入＋输出 '+str(u['reported_input_plus_output'])+' tokens；用量缺失或不完整 '+str(missing)+' 条。历史整理与主 Agent 用量不计入；生成本报告不调用模型。',
         '', '当前有效结果为零或未发现问题，都不代表整轮任务通过；过期也不代表问题已修复。','']
     return '\n'.join(lines)
+
+
+def reminder_summary(report):
+    notices=report['reminders']
+    responses=[n['agent_response'] for n in notices if n.get('agent_response')]
+    disputed=sum(r['value']['disposition']=='disputed' for r in responses)
+    emitted=sum(bool(n.get('emitted_at')) for n in notices)
+    external=sum(n['delivery']=='confirmed_by_external_test_observer' for n in notices)
+    return ('- 提醒：累计尝试 '+str(report['budget']['reminders_used'])+' 次；保留记录中已发出 '+str(emitted)+
+            ' 次、Agent 已回应 '+str(len(responses))+' 次（其中提出异议 '+str(disputed)+
+            ' 次）、外部接收证据 '+str(external)+' 次；未验证因提醒而纠正。')
 
 
 def markdown(report):
@@ -371,6 +402,8 @@ def markdown(report):
         '- 用量缺失/不完整：'+str(len(u['usage_missing_review_ids'])+len(u['usage_incomplete_review_ids'])+u.get('omitted_review_usage',{}).get('missing',0)+u.get('omitted_review_usage',{}).get('incomplete',0))+' 条；主 Agent 用量未采集。生成本报告没有模型调用。','',
         '## 任务依据','']
     lines[-2:-2]=final_wait_lines(report)
+    lines[-2:-2]=[line for line in brief(report).splitlines() if line.startswith(
+        ('- 状态：','- 最近完成评估：','- 最近调度错误：','- 提醒：'))]
     gate=report.get('review_gate')
     if gate:
         if gate['reason']=='review_in_progress':
@@ -445,6 +478,8 @@ def markdown(report):
         if job['error_type']:lines.append('- 失败类别：'+safe(job['error_type']))
         if job['freshness_reasons']:lines.append('- 过期原因：'+safe(', '.join(job['freshness_reasons'])))
         if job['health']!='as_recorded':lines.append('- 健康状态：'+safe(job['health']))
+        if job.get('packet_selection'):
+            lines.append('- 材料容量选取（用户原文保留）：'+safe(json.dumps(job['packet_selection'],ensure_ascii=False)))
         for ev in job['evidence']:
             lines.append('- 依据 '+safe(ev['id'])+'：'+safe(ev.get('kind'))+' '+safe(ev.get('path','')))
             if ev['kind']=='user_source':lines.append('  - '+safe(ev['text'][:240])+('…（完整依据见 JSON）' if len(ev['text'])>240 else ''))

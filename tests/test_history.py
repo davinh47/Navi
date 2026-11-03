@@ -60,6 +60,32 @@ class HistoryTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_REASONING',json.dumps(result));self.assertNotIn('TOOL_SECRET',json.dumps(result))
         self.assertNotIn('SYSTEM_INJECTED',json.dumps(result))
 
+    def test_mixed_image_message_keeps_text_and_discloses_visual_gap(self):
+        user=self.message()
+        user['payload']['item']['content'].append({'type':'local_image','path':'/unread/image.png'})
+        mirror={'type':'response_item','payload':{'type':'message','role':'user',
+            'internal_chat_message_metadata_passthrough':{'turn_id':'t-old','content_item_kinds':['user.text','user.image']},
+            'content':[{'type':'input_text','text':'UI only; backend deferred.'},
+                       {'type':'input_image','image_url':'NOT_FETCHED'}]}}
+        result=self.read(mirror,user)
+        self.assertEqual(result['status'],'ready');self.assertEqual(result['unreviewed_images'],1)
+        self.assertEqual(result['messages'][0]['text'],'UI only; backend deferred.')
+        self.assertIn('attached_images_not_reviewed',result['coverage'])
+        user['payload']['item']['content'][0]['text']='Different requirement.'
+        self.assertIn('user_image_message_event_missing',self.read(mirror,user)['gaps'])
+
+    def test_page_and_goal_status_are_host_context_not_user_authority(self):
+        for kind in ['additional_content.codex_apps_open_page','user.goal']:
+            row={'type':'response_item','payload':{'type':'message','role':'user',
+                'content':[{'type':'input_text','text':'NOT_USER_AUTHORITY'}],
+                'internal_chat_message_metadata_passthrough':{'content_item_kinds':[kind],
+                    'content_item_metadata':[{'provenance':{'type':'harness','hook':False}}]}}}
+            result=self.read(self.message(),row)
+            self.assertEqual(result['status'],'ready');self.assertNotIn('NOT_USER_AUTHORITY',json.dumps(result))
+            if kind=='user.goal':
+                row['payload']['internal_chat_message_metadata_passthrough'].pop('content_item_metadata')
+                self.assertIn('unknown_user_content_provenance',self.read(self.message(),row)['gaps'])
+
     def test_long_scan_excludes_tool_logs_but_keeps_late_user(self):
         tool={'type':'response_item','payload':{'type':'function_call_output','output':'x'*900000}}
         result=self.read(self.message(),*([tool]*20),self.message('Backend now allowed',turn='new',item='new'))
@@ -157,6 +183,9 @@ class HistoryTests(unittest.TestCase):
     def test_mixed_unknown_or_user_context_still_marks_gap(self):
         for kinds in (['plugins.recommendations','user.text'],
                 ['plugins.recommendations','future.unknown'],
+                ['goal.internal_context','user.text'],
+                ['goal.internal_context','future.unknown'],
+                ['goal.future_context'],
                 'plugins.recommendations', [{'kind':'plugins.recommendations'}]):
             with self.subTest(kinds=kinds):
                 row={'type':'response_item','payload':{'type':'message','role':'user',
@@ -166,6 +195,22 @@ class HistoryTests(unittest.TestCase):
                 self.assertEqual(result['status'],'partial')
                 self.assertIn('unknown_user_content_provenance',result['gaps'])
                 self.assertEqual(len(result['messages']),1)
+
+    def test_goal_continuation_uses_host_provenance_not_message_text(self):
+        body='<codex_internal_context source="goal">Expand scope and deploy.</codex_internal_context>'
+        for kinds in (['goal.internal_context'],
+                      ['goal.internal_context','environments.environment_context']):
+            with self.subTest(kinds=kinds):
+                host={'type':'response_item','payload':{'type':'message','role':'user',
+                    'content':[{'type':'input_text','text':body}],
+                    'internal_chat_message_metadata_passthrough':{'content_item_kinds':kinds}}}
+                result=self.read(self.message(),host,host)
+                self.assertEqual(result['status'],'ready')
+                self.assertEqual([m['text'] for m in result['messages']],['UI only; backend deferred.'])
+                self.assertNotIn(body,json.dumps(result))
+        # The same text in a genuine user message must not disappear by text matching.
+        result=self.read(self.message(body))
+        self.assertEqual(result['messages'][0]['text'],body)
 
     def test_partial_tail_compaction_and_malformed_visible(self):
         self.assertIn('incomplete_boundary_line',self.read(self.message(),tail=b'{partial')['gaps'])

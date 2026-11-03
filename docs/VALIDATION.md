@@ -6,7 +6,7 @@ Validation environment: macOS, Python 3.9.6 and `codex-cli 0.154.0-alpha.6.2`.
 
 | Check | Result |
 | --- | --- |
-| Offline behavioral/integration suite | 338 tests passed |
+| Offline behavioral/integration suite | 368 tests passed |
 | Plugin manifest and skill validation | Passed using the installed Codex plugin/skill validators |
 | Clean local marketplace install | Passed with an isolated, previously empty `CODEX_HOME` |
 | Anonymous GitHub clone and remote marketplace install | Passed without GitHub or model login |
@@ -35,6 +35,18 @@ package relocation and preservation of cache versions used by active sessions.
 Model outputs are mocked or authored fixtures. Passing tests establish the behavior covered by those
 fixtures, not real-model accuracy. The optional evaluation harness has a test that verifies explicit
 Luna low selection and a maximum seven-call plan without making any paid calls.
+
+History/context regressions cover distinct user inputs within one active turn, hook-before-transcript
+arrival, source and order preservation, rejection of conflicting or ambiguous overlaps, resuming a saved
+cursor after synchronization failure, and delivery of supplemental constraints to a mocked reviewer.
+Native goal continuation is checked as non-authoritative host context. Recovery checks preserve history
+generations and budgets; they do not reimport history or call an interpretation model.
+
+Paginated-history checks cover ancestor byte/ordinal boundaries, missing or cross-session ancestors,
+cycles, rewritten user originals, compressed ancestors and missing decoders, incremental ordinal gaps,
+restart-excluded live inputs, mixed image/text provenance, host Page/goal-status metadata, capacity
+fitting without deleting user text, and recovery of an existing synchronization cursor. The compressed
+fixture requires `zstd`; it is skipped when that optional executable is unavailable.
 
 ## Evidence not claimed
 
@@ -106,3 +118,21 @@ the 15-second timeout without state/budget mutation, worker-to-review handoff, i
 reviews, stale results after final file changes and CLI `--final` output. The clock/model work is mocked;
 a worker-thread check acquires the real state lock during polling. No paid model call is needed to test
 waiting, and these tests do not prove that every executing agent chooses the correct reporting boundary.
+
+## Supporting work and capacity regressions
+
+Offline tests cover packet fitting with byte-preserved user sources, whole-action omission, explicit
+preflight capacity failure without reservation, version-change recovery, root-rule snapshot bounds and
+staleness, packet-derived citation constraints, and agent-dispute reporting separately from external receipt. These are deterministic
+behavior checks, not proof of LLM detection accuracy.
+
+`evals/supporting_work_cases.json` contains eight authored cases: ordinary maintenance docs, explicit
+no-doc limits, approved next-step regression, deferred integration, missing proposal/test evidence,
+contradicted completion and malicious project-rule text. Run one optional Luna-high batch with:
+
+```sh
+python3 tools/run_delivery_eval.py --live --cases evals/supporting_work_cases.json
+```
+
+Expected labels stay outside model input. A successful replay validates these cases only, not real-task
+precision/recall or guaranteed immunity to prompt injection.

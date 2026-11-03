@@ -47,11 +47,11 @@ def synchronize(data, session, target=None):
         snapshot={'device':info.st_dev,'inode':info.st_ino,'size':info.st_size}
         # A cursor bootstrap must still bind to the exact originally imported file.
         original=base.get('snapshot_identity') or base.get('snapshot')
-        if original and (info.st_dev,info.st_ino)!=(original['device'],original['inode']):
+        if original and (info.st_dev,info.st_ino)!=(original['device'],original['inode']) and not history.paginated(target):
             raise ValueError('transcript_replaced_or_truncated')
         result=history.read_snapshot(target,session,snapshot,previous,commentary_since)
         if result['status']!='ready':raise ValueError(','.join(result['gaps']))
-        if previous is None and base.get('prefix_sha256'):
+        if previous is None and base.get('prefix_sha256') and not result.get('chain'):
             # The bootstrap reader validated its current prefix, but the original prefix
             # must also match the previously imported snapshot, not merely its inode.
             import hashlib
@@ -83,7 +83,9 @@ def synchronize(data, session, target=None):
                 integration.update(ordered_sources=ordered,messages=messages,packet=packet)
                 sync.update(status='ready',reason=None,reader=result,commentary_since=commentary_since,
                     refreshed_at=time.time(),parsed_new_bytes=result['parsed_new_bytes'],
-                    synced_bytes=result['read_bytes'],model_calls=0)
+                    synced_bytes=result['read_bytes'],model_calls=0,
+                    unreviewed_images=result.get('unreviewed_images',0),
+                    history_segments=result.get('chain',{}).get('segments',1))
             except (ValueError,KeyError,TypeError) as exc:error=str(exc)[:256]
         if error:sync.update(status='unavailable',reason=error)
         save(path,state)

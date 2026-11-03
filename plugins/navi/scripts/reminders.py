@@ -70,8 +70,9 @@ def enqueue(state, value, origin, turn, **metadata):
         return key
     budget.trim_reminders(state)
     now = time.time()
-    from review import support_digest
+    from review import support_digest, packet_context
     metadata.setdefault('support_digest',support_digest(state))
+    metadata.setdefault('project_guidance_digest',digest(packet_context.project_guidance(state)))
     transport['entries'][key] = {'id':key, 'origin':origin, 'payload':value,
         'status':'pending' if turn and turn == transport['active_turn'] else 'report_only_late',
         'turn_id':turn, 'created_at':now, 'expires_at':now+TTL_SECONDS,
@@ -88,13 +89,15 @@ def rendered(entry):
 
 def stale_reason(state, path, entry):
     from history_context import ready
-    from review import support_digest
+    from review import support_digest, packet_context
     if entry.get('support_digest') and entry['support_digest']!=support_digest(state):
         return 'supporting_context_changed'
     if not ready(state):
         return 'history_not_ready'
     if not state.get('action_evidence', {}).get('enabled'):
         return 'action_capture_disabled'
+    if entry.get('project_guidance_digest') and entry['project_guidance_digest']!=digest(packet_context.project_guidance(state)):
+        return 'project_guidance_changed'
     if path is not None and path.with_suffix('.gap').exists():
         return 'capture_gap'
     if user_context_digest(state) != entry['payload']['user_context_digest']:

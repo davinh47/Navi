@@ -83,6 +83,80 @@ class ContextSyncTests(unittest.TestCase):
         self.assertEqual(len(tasks.supervision_sources(self.state())),2)
         self.assertEqual(h['messages'][0]['authority'],'agent_statement_not_authorization')
 
+    def test_same_turn_amendment_recovers_cursor_and_reaches_reviewer_without_reset(self):
+        self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+        before=self.state()
+        amendment='Test with an isolated pointer; keep the backend deferred.'
+        self.user(amendment,'t1')
+        # The hook can arrive before its canonical transcript item. Preserve it once in either case.
+        self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+        self.assertEqual([s['text'] for s in self.packet()['user_sources']],
+                         ['Repair UI only; backend deferred.',amendment])
+        self.append(amendment,'user','t1','u2')
+        self.append('I will use the isolated pointer.','assistant','t1','a2','commentary')
+        # Existing installations may have saved this failure; recovery must use the old reader.
+        with tasks.locked(self.data,self.session) as (path,state):
+            state['context_sync'].update(status='unavailable',reason='ambiguous_live_turn')
+            tasks.save(path,state)
+        old_support=review.support_digest(self.state())
+        self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+        recovered=self.state()
+        self.assertEqual(recovered['context_sync']['status'],'ready')
+        self.assertIsNone(recovered['context_sync']['reason'])
+        self.assertEqual(recovered['history']['token'],before['history']['token'])
+        self.assertEqual(recovered['history_integration']['token'],before['history_integration']['token'])
+        self.assertEqual(recovered['budget'],before['budget'])
+        self.assertEqual(recovered['history_budget'],before['history_budget'])
+        self.assertEqual(recovered['context_sync']['parsed_new_bytes'],self.file.stat().st_size-before['context_sync']['synced_bytes'])
+        self.assertTrue(review.is_stale(recovered,{'support_digest':old_support}))
+        packet=self.packet()
+        self.assertEqual([s['id'] for s in packet['user_sources']],[s['id'] for s in recovered['sources']])
+        self.assertEqual([s['text'] for s in packet['user_sources']],
+                         ['Repair UI only; backend deferred.',amendment])
+        self.assertEqual([m['role'] for m in packet['interpretation']['history_context']['conversation_order']],
+                         ['user','assistant','user','assistant'])
+        self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+        self.assertEqual(self.state()['context_sync']['parsed_new_bytes'],0)
+        supervisor.configure(self.data,self.session,True)
+        (self.work/'ui.py').write_text('new')
+        supervisor.on_hook(self.data,self.payload('PostToolUse',transcript_path=str(self.file)),launcher=lambda *a:None)
+        token=self.state()['supervisor']['worker']['token'];seen=[]
+        def runner(packets,**kw):
+            seen.extend(packets);raise ValueError('fixture stops before real model')
+        supervisor.worker(self.data,self.session,token,runner=runner,delay=0)
+        self.assertEqual(len(seen),1)
+        self.assertEqual([s['text'] for s in seen[0]['user_sources']],
+                         ['Repair UI only; backend deferred.',amendment])
+
+    def test_paginated_rotation_preserves_history_budget_and_recovers_failed_sync(self):
+        self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+        before=self.state();root_id='00000000-0000-0000-0000-000000000001'
+        leaf_id='00000000-0000-0000-0000-000000000002'
+        parent=self.root/('rollout-'+root_id+'.jsonl');leaf=self.root/('rollout-'+leaf_id+'.jsonl')
+        rows=[json.loads(line) for line in self.file.read_text().splitlines()]
+        rows[0]['payload']['history_mode']='paginated'
+        for i,row in enumerate(rows):row['ordinal']=i
+        parent.write_text(''.join(json.dumps(r)+'\n' for r in rows))
+        header={'ordinal':len(rows),'type':'session_meta','payload':{'id':self.session,'history_mode':'paginated',
+            'history_base':{'thread_id':root_id,'end_ordinal_exclusive':len(rows),'end_byte_offset':parent.stat().st_size}}}
+        amendment=copy.deepcopy(rows[1]);amendment['ordinal']=len(rows)+1
+        amendment['payload']['turn_id']='t2';amendment['payload']['item'].update(id='u2',content=[{'type':'text','text':'Keep the backend deferred.'}])
+        leaf.write_text(json.dumps(header)+'\n'+json.dumps(amendment)+'\n')
+        self.user('Keep the backend deferred.','t2')
+        raw=parent.read_bytes();parent.unlink()
+        self.assertFalse(sync.synchronize(self.data,self.session,str(leaf)))
+        self.assertEqual(self.state()['history_integration'],before['history_integration'])
+        parent.write_bytes(raw)
+        self.assertTrue(sync.synchronize(self.data,self.session,str(leaf)))
+        after=self.state()
+        self.assertEqual(after['history_budget'],before['history_budget'])
+        self.assertEqual(after['budget'],before['budget'])
+        self.assertEqual(after['history_integration']['token'],before['history_integration']['token'])
+        self.assertEqual([s['text'] for s in self.packet()['user_sources']],
+                         ['Repair UI only; backend deferred.','Keep the backend deferred.'])
+        self.assertTrue(sync.synchronize(self.data,self.session,str(leaf)))
+        self.assertEqual(self.state()['context_sync']['parsed_new_bytes'],0)
+
     def test_bootstrap_legacy_reader_once_without_budget_reset(self):
         with tasks.locked(self.data,self.session) as (p,s):
             s['history'].pop('cursor');s['history'].pop('snapshot_identity');tasks.save(p,s)
@@ -112,6 +186,37 @@ class ContextSyncTests(unittest.TestCase):
         self.assertEqual(self.state()['history_integration'],before)
         with self.file.open('a') as f:f.write('"payload":{"type":"task_started"}}\n')
         self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+
+    def test_goal_compatibility_recovers_saved_cursor_without_resetting_authority_or_budget(self):
+        self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+        before=self.state()
+        host={'type':'response_item','payload':{'type':'message','role':'user',
+            'content':[{'type':'input_text','text':'INTERNAL_GOAL_NOT_NEW_AUTHORITY'}],
+            'internal_chat_message_metadata_passthrough':{'content_item_kinds':['goal.internal_context']}}}
+        with self.file.open('a') as stream:
+            for _ in range(3):stream.write(json.dumps(host)+'\n')
+        with patch.object(history,'HOST_CONTEXT_KINDS',history.HOST_CONTEXT_KINDS-{'goal.internal_context'}):
+            self.assertFalse(sync.synchronize(self.data,self.session,str(self.file)))
+        failed=self.state()
+        self.assertEqual(failed['context_sync']['reason'],'unknown_user_content_provenance')
+        self.assertEqual(failed['context_sync']['reader'],before['context_sync']['reader'])
+        self.assertEqual(failed['history_integration'],before['history_integration'])
+        self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+        recovered=self.state()
+        self.assertEqual(recovered['context_sync']['status'],'ready')
+        self.assertEqual(tasks.user_context_digest(recovered),tasks.user_context_digest(before))
+        self.assertEqual(recovered['budget'],before['budget'])
+        self.assertEqual(recovered['history_budget'],before['history_budget'])
+        self.assertEqual(recovered['context_sync']['parsed_new_bytes'],self.file.stat().st_size-before['context_sync']['synced_bytes'])
+        self.user('Backend is now allowed, but do not deploy.','t2')
+        self.append('Backend is now allowed, but do not deploy.','user','t2','u2')
+        self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+        packet=self.packet()
+        self.assertEqual([s['text'] for s in packet['user_sources']],
+                         ['Repair UI only; backend deferred.','Backend is now allowed, but do not deploy.'])
+        self.assertNotIn('INTERNAL_GOAL_NOT_NEW_AUTHORITY',json.dumps(packet))
+        self.assertTrue(sync.synchronize(self.data,self.session,str(self.file)))
+        self.assertEqual(self.state()['context_sync']['parsed_new_bytes'],0)
 
     def test_recording_disabled_during_read_cannot_publish(self):
         self.append('New context','assistant','t1','a2')

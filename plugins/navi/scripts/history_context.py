@@ -9,7 +9,10 @@ import sys
 import time
 import uuid
 
-MAX_INPUT_BYTES = 64 * 1024
+# Local raw-context storage includes provenance for every message. It is not a
+# model request; independent review packets retain their separate 64 KiB bound.
+MAX_INPUT_BYTES = 256 * 1024
+MAX_INTERPRETATION_BYTES = 64 * 1024
 MAX_SUPPORT_BYTES = 16 * 1024
 MAX_RESULT_BYTES = 24 * 1024
 DEFAULT_MODEL = 'gpt-5.6-luna'
@@ -54,22 +57,35 @@ def assemble(state):
     if history.get('status') != 'ready' or history.get('gaps'):
         raise ValueError('history_incomplete; no authority selection or paid call')
     live = state['sources']
-    by_turn = {s['turn_id']: s for s in live}
-    if len(by_turn) != len(live):
-        raise ValueError('ambiguous_live_turn')
+    # Mid-run user input shares the active turn. Hooks identify sources by turn
+    # and exact prompt text, so turn alone cannot identify a message overlap.
+    by_message = {(s['turn_id'], s['text']): s for s in live}
+    live_turns = {s['turn_id'] for s in live}
+    if len(by_message) != len(live):
+        raise ValueError('ambiguous_live_message')
     messages, ordered, matches = [], [], []
+    excluded_live=set(history.get('chain',{}).get('excluded_live_inputs',[]))
     for original in history['messages']:
         message = {k: original[k] for k in ('id', 'role', 'turn_id', 'text', 'authority')}
         message.update({k:original[k] for k in ('timestamp','phase') if k in original})
         if original['role'] == 'user':
-            current = by_turn.get(original['turn_id'])
+            current = by_message.get((original['turn_id'], original['text']))
             if current:
-                if current['text'] != original['text'] or current['id'] in matches:
+                if current['id'] in matches:
                     raise ValueError('ambiguous_history_live_overlap')
+                index=next(i for i,s in enumerate(live) if s['id']==current['id'])
+                skipped=live[len(matches):index]
+                if skipped and all(s['id'] in excluded_live for s in skipped):
+                    for s in skipped:
+                        ordered.append(s);matches.append(s['id'])
+                        messages.append({'id':s['id'],'role':'user','turn_id':s['turn_id'],
+                            'text':s['text'],'authority':'direct_user_message'})
                 matches.append(current['id'])
                 message['id'] = current['id']
                 source = current
             else:
+                if original['turn_id'] in live_turns:
+                    raise ValueError('ambiguous_history_live_overlap')
                 # A complete supported snapshot may recover a user message missed by
                 # live capture. Keep its imported provenance; never forge a live
                 # submission or rollback confirmation. Matched live messages must
@@ -221,6 +237,8 @@ def activate(data, session, model=DEFAULT_MODEL, effort=DEFAULT_EFFORT, launcher
         budget = state.setdefault('history_budget', {'limit':1,'calls_reserved':0})
         try:
             ordered, messages, packet = assemble(state)
+            if len(json.dumps(packet,ensure_ascii=False).encode()) > MAX_INTERPRETATION_BYTES:
+                raise ValueError('history_interpretation_capacity; use raw sources without a history model')
             if budget['calls_reserved'] >= budget['limit']:raise ValueError('history_model_budget_exhausted; no automatic retry')
         except ValueError as error:
             h.update(status='unavailable',reason=str(error))

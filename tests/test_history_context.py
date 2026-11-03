@@ -83,6 +83,36 @@ class HistoryContextTests(unittest.TestCase):
         self.prompt('Continue.','new')
         self.assertEqual(len(hc.assemble(self.state())[0]),3)
 
+    def test_distinct_user_messages_in_one_turn_preserve_sources_and_order(self):
+        self.prompt('Use the isolated pointer, not the system pointer.','live')
+        self.prompt('Keep the backend deferred.','live')
+        state=self.state()
+        original_sources=copy.deepcopy(state['sources'])
+        state['history']['messages'] += [dict(s,role='user',authority='direct_user_message')
+                                         for s in state['sources'][1:]]
+        ordered,messages,_=hc.assemble(state)
+        self.assertEqual([s['id'] for s in ordered],['h-old']+[s['id'] for s in original_sources])
+        self.assertEqual([m['text'] for m in messages if m['role']=='user'],
+                         [self.old['text']]+[s['text'] for s in original_sources])
+        self.assertEqual(state['sources'],original_sources)
+
+    def test_same_turn_overlap_rejects_reordering_missing_and_conflicting_messages(self):
+        self.prompt('Use the isolated pointer.','live')
+        state=self.state()
+        first=state['history']['messages'][-1]
+        second=dict(state['sources'][-1],role='user',authority='direct_user_message')
+        for suffix in ([second,first], [second], [first,dict(second,text='Use the system pointer.')]):
+            changed=copy.deepcopy(state);changed['history']['messages']=state['history']['messages'][:-1]+suffix
+            with self.subTest(suffix=suffix),self.assertRaises(ValueError):hc.assemble(changed)
+
+    def test_identical_same_turn_messages_are_not_silently_assigned_to_one_source(self):
+        state=self.state()
+        state['history']['messages'].append(dict(state['history']['messages'][-1],id='h-another-message'))
+        with self.assertRaisesRegex(ValueError,'ambiguous_history_live_overlap'):hc.assemble(state)
+        state=self.state()
+        state['sources'].append(dict(self.live,id='u-another-source'))
+        with self.assertRaises(ValueError):hc.assemble(state)
+
     def test_unproven_overlap_and_conflicting_turn_are_rejected(self):
         for mode in ('absent','different'):
             state=self.state()
@@ -113,6 +143,18 @@ class HistoryContextTests(unittest.TestCase):
         for suffix in ([third,second],[third]):
             changed=copy.deepcopy(state);changed['history']['messages']+=suffix
             with self.subTest(suffix=suffix),self.assertRaisesRegex(ValueError,'boundary_unproven'):hc.assemble(changed)
+
+    def test_only_verified_excluded_live_input_can_bridge_restart_boundary(self):
+        self.prompt('Use the isolated pointer.','aborted-turn')
+        excluded=self.state()['sources'][-1]
+        self.prompt('Use the isolated pointer.','replayed-turn')
+        state=self.state()
+        state['history']['messages'].append(dict(state['sources'][-1],role='user',authority='direct_user_message'))
+        with self.assertRaisesRegex(ValueError,'boundary_unproven'):hc.assemble(state)
+        state['history']['chain']={'excluded_live_inputs':[excluded['id']]}
+        ordered,messages,_=hc.assemble(state)
+        self.assertEqual([s['id'] for s in ordered],['h-old']+[s['id'] for s in state['sources']])
+        self.assertEqual(len([m for m in messages if m['role']=='user']),4)
 
     def test_partial_capacity_or_overflow_never_spends_model_budget(self):
         for mode in ('partial','bytes','sources'):

@@ -14,6 +14,12 @@ import run_delivery_eval as evaluation
 
 
 class DeliveryEvaluationTests(unittest.TestCase):
+    def test_supporting_work_cases_cover_authorization_and_evidence_gaps(self):
+        values=evaluation.cases(ROOT/'evals/supporting_work_cases.json')
+        self.assertEqual(len(values),8)
+        self.assertEqual({v['expected']['scope'] for v in values},{'within_scope','drift','uncertain'})
+        self.assertTrue(all('expected' not in v['packet'] for v in values))
+
     def prediction(self,case):
         expected=case['expected'];ids=['u1','a1']
         return {'case_id':case['packet']['case_id'],'verdict':expected['scope'],

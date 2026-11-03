@@ -18,7 +18,10 @@ ADAPTER = 'codex-item-completed-v3'
 # Host metadata, not text matching, distinguishes these from direct user input.
 # Desktop can combine multiple host context blocks into one role=user message.
 HOST_CONTEXT_KINDS = frozenset({'environments.environment_context',
-    'generic.turn_aborted', 'plugins.recommendations', 'agents_md.instructions'})
+    'generic.turn_aborted', 'plugins.recommendations', 'agents_md.instructions',
+    # Native goal continuation repeats an objective; it is not a new user grant.
+    'goal.internal_context', 'additional_content.codex_apps_open_page'})
+HARNESS_CONTEXT_KINDS = frozenset({'user.goal'})
 # Disk scan limits are independent of the much smaller model packet. Tool logs
 # and compaction payloads are parsed locally, never copied into model context.
 MAX_BYTES = 256 * 1024 * 1024
@@ -185,7 +188,20 @@ def on_hook(data, payload, launcher=launch):
                     save(path,state)
 
 
+def paginated(target):
+    from transcript_chain import header
+    row, _ = header(Path(target))
+    return row['payload'].get('history_mode') == 'paginated'
+
+
 def read_snapshot(target, session, snapshot, previous=None, commentary_since=None):
+    if paginated(target):
+        from transcript_chain import read
+        return read(target,session,snapshot,previous,commentary_since,_read_snapshot)
+    return _read_snapshot(target,session,snapshot,previous,commentary_since)
+
+
+def _read_snapshot(target, session, snapshot, previous=None, commentary_since=None):
     """Read canonical host UserMessage/AgentMessage events, never role=user alone.
 
     Append-only growth is allowed after the captured boundary. Rewrites, identity
@@ -201,11 +217,15 @@ def read_snapshot(target, session, snapshot, previous=None, commentary_since=Non
     seen = dict(cursor.get('seen', {}))
     mirrors = set(map(tuple, cursor.get('mirrors', [])))
     observed = set(map(tuple, cursor.get('observed', [])))
+    image_mirrors = set(map(tuple, cursor.get('image_mirrors', [])))
+    image_observed = set(map(tuple, cursor.get('image_observed', [])))
+    unreviewed_images = previous.get('unreviewed_images', 0)
     total_text = previous.get('user_text_bytes', 0)
     user_count = previous.get('user_message_count', 0)
     assistant_bytes = sum(len(m['text'].encode()) for m in messages if m['role']=='assistant')
     omitted_assistant = previous.get('assistant_messages_omitted', 0)
     compactions = list(cursor.get('compactions', []))
+    next_ordinal = cursor.get('next_ordinal')
     line_number = previous.get('lines_read', 0)
     offset = previous.get('read_bytes', 0)
     initial_offset, initial_line = offset, line_number
@@ -252,6 +272,14 @@ def read_snapshot(target, session, snapshot, previous=None, commentary_since=Non
             if not isinstance(row,dict) or not isinstance(row.get('payload'),dict):
                 gaps.append('unknown_record_format');break
             kind, value = row.get('type'), row['payload']
+            if line_number==1 and value.get('history_mode')=='paginated':
+                next_ordinal=row.get('ordinal')
+                if type(next_ordinal) is not int or next_ordinal<0:
+                    raise ValueError('history_chain_start_ordinal')
+            if next_ordinal is not None:
+                if type(row.get('ordinal')) is not int or row['ordinal']!=next_ordinal:
+                    raise ValueError('history_chain_ordinal_gap')
+                next_ordinal+=1
             if line_number==1:
                 if kind!='session_meta' or value.get('id')!=session:
                     raise ValueError('session_identity_mismatch')
@@ -281,6 +309,26 @@ def read_snapshot(target, session, snapshot, previous=None, commentary_since=Non
                     if isinstance(content,list) and len(content)==1 and isinstance(content[0],dict) and content[0].get('type')=='input_text':
                         mirrors.add((meta.get('turn_id'),digest(content[0].get('text'))))
                     else:gaps.append('unsupported_user_content')
+                elif (isinstance(kinds,list) and 'user.image' in kinds
+                      and all(k in ('user.text','user.image') for k in kinds)):
+                    content=value.get('content',[])
+                    if (isinstance(content,list) and content and all(isinstance(c,dict) for c in content)
+                            and content[0].get('type')=='input_text'
+                            and isinstance(content[0].get('text'),str)
+                            and all(c.get('type') in ('input_text','input_image') for c in content)):
+                        # Codex's first text block is the canonical user text; later text
+                        # blocks wrap images. Only canonical UserMessage grants authority.
+                        image_mirrors.add((meta.get('turn_id'),digest(content[0]['text']),
+                                          sum(c['type']=='input_image' for c in content)))
+                    else:gaps.append('unsupported_user_content')
+                elif (isinstance(kinds,list) and kinds and all(isinstance(k,str) and k in HARNESS_CONTEXT_KINDS for k in kinds)
+                      and isinstance(meta.get('content_item_metadata'),list)
+                      and len(meta['content_item_metadata'])==len(kinds)
+                      and all(isinstance(c,dict) and isinstance(c.get('provenance'),dict)
+                              and c['provenance'].get('type')=='harness'
+                              and c.get('provenance',{}).get('hook') is False
+                              for c in meta['content_item_metadata'])):
+                    pass  # Host lifecycle/page context, not a new task authorization.
                 elif not kinds:
                     gaps.append('user_role_without_provenance')
                 elif not (isinstance(kinds,list) and all(isinstance(k,str) and k in HOST_CONTEXT_KINDS for k in kinds)):
@@ -305,11 +353,16 @@ def read_snapshot(target, session, snapshot, previous=None, commentary_since=Non
             if not isinstance(content,list) or not content:
                 gaps.append('unsupported_message_content');continue
             supported='text' if role=='user' else 'Text'
-            if any(not isinstance(c,dict) or c.get('type')!=supported or not isinstance(c.get('text'),str) for c in content):
+            images=[c for c in content if isinstance(c,dict) and c.get('type')=='local_image'
+                    and isinstance(c.get('path'),str)] if role=='user' else []
+            if any(not isinstance(c,dict) or (c not in images and
+                    (c.get('type')!=supported or not isinstance(c.get('text'),str))) for c in content):
                 if role=='user':gaps.append('nontext_message_omitted')
                 else:omitted_assistant+=1
                 continue
-            body='\n'.join(c['text'] for c in content)
+            body='\n'.join(c['text'] for c in content if c not in images)
+            if not body.strip():
+                gaps.append('image_only_user_requirement_unavailable');continue
             identity=digest([role,turn,item_id])
             sha=digest(body)
             if identity in seen:
@@ -318,7 +371,10 @@ def read_snapshot(target, session, snapshot, previous=None, commentary_since=Non
             if len(seen)>=4096:
                 gaps.append('message_identity_capacity');break
             seen[identity]=sha
-            if role=='user':observed.add((turn,sha))
+            if role=='user':
+                observed.add((turn,sha))
+                image_observed.add((turn,sha,len(images)))
+                unreviewed_images+=len(images)
             size=len(body.encode())
             if role=='user':
                 if size>MAX_MESSAGE_BYTES or total_text+size>MAX_TEXT_BYTES or user_count>=MAX_MESSAGES:
@@ -357,14 +413,19 @@ def read_snapshot(target, session, snapshot, previous=None, commentary_since=Non
                 or (current.st_dev,current.st_ino)!=(snapshot['device'],snapshot['inode'])):
             raise ValueError('transcript_changed_during_read')
     if mirrors-observed:gaps.append('user_message_event_missing')
+    if image_mirrors-image_observed:gaps.append('user_image_message_event_missing')
     if not messages:gaps.append('no_supported_messages')
-    return {'status':'partial' if gaps else 'ready', 'coverage':'available_text_events_only',
+    return {'status':'partial' if gaps else 'ready',
+        'coverage':'available_text_events_only; attached_images_not_reviewed' if unreviewed_images else 'available_text_events_only',
+        'unreviewed_images':unreviewed_images,
         'user_text_bytes':total_text, 'user_message_count':user_count,
         'assistant_messages_omitted':omitted_assistant, 'compaction_windows':len(compactions),
         'messages':messages, 'gaps':sorted(set(gaps)), 'read_bytes':offset,
         'prefix_sha256':fingerprint.hexdigest(), 'lines_read':line_number,
         'parsed_new_bytes':offset-initial_offset, 'snapshot_identity':snapshot,
-        'cursor':{'seen':seen, 'observed':sorted(observed), 'mirrors':sorted(mirrors), 'compactions':compactions},
+        'cursor':{'seen':seen, 'observed':sorted(observed), 'mirrors':sorted(mirrors), 'compactions':compactions,
+                  'image_mirrors':sorted(image_mirrors),'image_observed':sorted(image_observed),
+                  'next_ordinal':next_ordinal},
         'snapshot_bytes':snapshot['size'], 'adapter':ADAPTER,
         'limitations':['Only canonical text events retained; no completeness guarantee for all past chat content.',
             'Assistant statements are not user authorization. No semantic interpretation or supervision integration.']}

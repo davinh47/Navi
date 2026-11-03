@@ -7,6 +7,11 @@ Navi is an experimental **local Codex plugin**, tested on macOS with
 Linux is a portability/CI target, not a completed native-host acceptance claim. Windows is unsupported
 because the runtime uses POSIX locking and filesystem operations.
 
+If Codex has compressed older conversation segments to `.jsonl.zst`, the `zstd` executable must be
+available on the hook process's PATH. For example, install it with `brew install zstd` on macOS or
+`sudo apt-get install zstd` on Debian/Ubuntu. Uncompressed transcripts do not need it. Navi reports
+`compressed_history_requires_zstd` if it is missing; it never installs dependencies automatically.
+
 Independent evaluations launch `codex exec` with the user's existing login. The default review model
 is `gpt-5.6-luna` with high reasoning; history interpretation defaults to medium. These model identifiers
 may not be available to every account. Choose a supported model explicitly rather than silently falling
@@ -49,6 +54,12 @@ Ask the executing agent to check:
 3. Task action capture, configured watched files/activity mode, and supervisor enablement.
 4. Actual review model, profile, any explicit cumulative ceiling, used reservations, and `runtime.eligible`.
 5. Bootstrap/history integration readiness and `context_sync` freshness for the current task.
+
+After a compatible transcript-reader update, `context_sync.py sync` with the existing data directory,
+session ID and host transcript path resumes that conversation without resetting counters or requesting
+another history interpretation. Paginated history follows declared parent segments, including compressed
+ones. A missing parent or changed original requirement remains an explicit failure; do not clear state
+or suppress the error to make the report appear healthy.
 
 A loaded skill, saved configuration, or old event log alone does not prove active supervision.
 Missing Python, an unavailable model, untrusted hooks, or unsupported transcript records must be reported

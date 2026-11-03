@@ -10,7 +10,12 @@ Navi is an experimental advisory tool, not an execution policy engine or proof o
 - Up to **48 retained tool events**, with **2 KiB inputs** and **1 KiB outputs** per event. Truncation,
   eviction and unknown authorship remain visible.
 - Up to **256 user sources**, **128 KiB user text**, **16 KiB per message**; the reader separately retains
-  bounded assistant text, selecting up to **16 KiB** for model support. Complete review packets cap at **64 KiB**.
+  bounded assistant text, selecting up to **16 KiB** for model support. Complete review packets cap at **64 KiB**. Optional supporting context and whole actions may be
+  omitted to fit, with explicit selection metadata; user originals remain verbatim. If those originals
+  and minimum evidence cannot fit, supervision reports a capacity failure without a model call.
+- Supporting project guidance reads only workspace-root `AGENTS.md`, `AGENTS.override.md`, and
+  `CLAUDE.md`, at most **8 KiB per file**, without symlink traversal. Parent/nested instructions and
+  oversized contents are not covered. These current, unknown-author snapshots do not grant user authority.
 - Initial local history scans cap at **256 MiB / 15 seconds**. Incremental parsing retains at most
   **4096 message identities** and bounded work per scan. Prefix verification also costs local I/O.
 - Total task state caps at **4 MiB**. Known gaps defer model review; they do not stop the main task.
@@ -68,6 +73,14 @@ provenance and independence checks are required; unknown or mixed ownership/depe
 silently reverted. There is no automatic rollback or general Git reset operation.
 
 ## Compatibility
+
+Paginated history requires locally available, verifiable ancestor segments. Compressed ancestors need
+`zstd` on PATH. Rebuilding a chain is bounded to 32 segments, 512 MiB of scanned prefixes/tails and a
+60-second scan deadline; individual decoder processes have a 30-second timeout. Missing or unsupported
+history is not silently reconstructed. Local text context has a 256 KiB bound, independent of the 64 KiB
+model-packet limit. User-source count/text limits still apply; this is not unlimited history storage.
+Mixed text/image messages preserve their text with an explicit visual-coverage gap; image-only requests
+cannot establish a text requirement. Navi does not inspect attachments to guess missing instructions.
 
 macOS is the native-host test target. POSIX offline portability does not establish Linux desktop
 compatibility. Windows and non-Codex adapters are not supported. Host upgrades may change hook payloads,

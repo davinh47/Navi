@@ -24,7 +24,7 @@ def clipped(value, limit):
             "sha256": digest(value)}
 
 
-def snapshot(workspace, name):
+def snapshot(workspace, name, max_bytes=MAX_FILE_BYTES):
     """No symlink traversal, devices, outside paths, recursive scans or shell execution."""
     relative = Path(name)
     if relative.is_absolute() or not relative.parts or any(p == ".." for p in relative.parts):
@@ -41,11 +41,11 @@ def snapshot(workspace, name):
             before = os.fstat(stream.fileno())
             if not stat.S_ISREG(before.st_mode):
                 return {"status": "not_regular"}
-            raw = stream.read(MAX_FILE_BYTES + 1)
+            raw = stream.read(max_bytes + 1)
             after = os.fstat(stream.fileno())
         if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
             return {"status": "changed_during_read"}
-        if len(raw) > MAX_FILE_BYTES:
+        if len(raw) > max_bytes:
             return {"status": "oversized", "size": after.st_size, "mtime_ns": after.st_mtime_ns}
         if b"\x00" in raw:
             return {"status": "binary"}
@@ -81,6 +81,8 @@ def refresh(state):
     capture = state.get("action_evidence")
     if not capture or not capture["enabled"]:
         return
+    from review_context import refresh_project_guidance
+    refresh_project_guidance(state)
     for name, entry in capture["files"].items():
         current = snapshot(capture["workspace"], name)
         if current != entry["current"]:
@@ -145,6 +147,8 @@ def configure(data, session, workspace, names, enabled=True):
         capture["enabled"] = enabled
         capture["generation"] = capture.get("generation", 0) + 1
         capture["revision"] += 1
+        from review_context import refresh_project_guidance
+        refresh_project_guidance(state)
         save(path, state)
 
 

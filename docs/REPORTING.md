@@ -27,13 +27,15 @@ Reports can contain private requirements, paths and code; review them before sha
 | Field | Meaning | What it does not establish |
 | --- | --- | --- |
 | Snapshot / 快照 | UTC generation time; cumulative conversation usage and retained reviews | Per-turn statistics or whole-task completion |
-| Status / 状态 | Current readiness checks, an occupied review slot, or specific unavailable reasons | That a review has run or a model is available to the account |
+| Status / 状态 | Current readiness checks, an occupied review slot, or recorded dispatch/preparation failures | That a review has run or a model is available to the account |
+| Latest completed review / 最近完成评估 | UTC time of the latest known completed independent evaluation | Coverage of the latest turn or correctness of its result |
+| Last dispatch error / 最近调度错误 | Failed preparation time and safe diagnostics, including packet bytes/limit when applicable | A paid model call; preflight failures reserve no review |
 | Configuration / 配置 | Configured model, reasoning effort and automatic dispatch interval | A periodic timer or guaranteed review every interval |
 | Budget / 预算 | Optional conversation ceiling and cumulative reservations, including failures | Number of successful reviews or a token allowance |
 | Reviews / 评估 | Retained completed, failed, unfinished and cancelled/superseded-before-call jobs; omitted old details | All historical evidence or only this turn's jobs |
 | Findings / 发现 | Current completed scope-drift, implementation-risk and scope-uncertainty counts; these can overlap | A count of distinct bugs, or proof of no drift when zero |
 | Coverage / 覆盖 | Explicit watch list, activity mode and concrete snapshot/event gaps | A complete repository audit |
-| Reminders / 提醒 | Cumulative emission attempts and externally confirmed receipt among retained records | Proof that the agent received, accepted or correctly acted on every attempt |
+| Reminders / 提醒 | Cumulative attempts; retained emitted notices, agent responses/disputes and external receipt evidence counted separately | Proof that the agent received, accepted or correctly acted on every attempt |
 | Usage / 用量 | Known cumulative independent-review input plus output tokens, including retained rollups | History interpretation, main-agent usage, pricing or missing usage treated as zero |
 
 Cached input is already part of input tokens; reasoning output is already part of output tokens. They
@@ -70,6 +72,8 @@ current result for the latest work. It should not compress either situation into
 | Status or symptom | Inspect next |
 | --- | --- |
 | Eligible / 可调度 | Wait for eligible new evidence and dispatch spacing; eligibility alone does not launch a call |
+| Packet capacity / 评估材料超过容量 | User originals plus minimum evidence cannot fit; inspect packet/source sizes. No model call or reservation occurs. |
+| Previous dispatch failed / 上次调度失败 | Inspect `last_dispatch_error`; older records may only retain a generic failure. Do not infer readiness from capture/sync success. |
 | Review in progress / 评估进行中 | Inspect queued/running jobs and the automatic worker in `supervisor.py status` |
 | Cumulative budget exhausted | Inspect the saved explicit ceiling and reservations; remove/change the ceiling only with user authorization |
 | Recording, capture, history or sync unavailable | Inspect the named prerequisite; installing or re-enabling alone does not prove it is ready |
@@ -107,3 +111,17 @@ Later results remain available in subsequent reports; an already-sent response i
 - [`budget.py`](../plugins/navi/scripts/budget.py): shared review gate, retention and usage rollups.
 - [Packaged skill](../plugins/navi/skills/navi/SKILL.md): the executing agent's reporting instruction.
 - [`test_report.py`](../tests/test_report.py): offline checks; these do not establish live-agent compliance.
+
+## Supporting evidence and reminder responses
+
+Oversized review packets first discard redundant interpretations, then older supporting replies while
+prioritizing the assistant proposal before the latest user message. If necessary they omit remaining
+support and whole older actions. User originals are never shortened. Review JSON `packet_selection`
+and the brief coverage line disclose selection; missing context stays uncertain. The full report shows
+selection metadata per review. If originals plus minimum evidence cannot fit, the dispatch error is
+reported instead of a misleading eligible status. The packet limit remains 64 KiB.
+
+An agent response such as `disputed` is evidence of its recorded response, not external confirmation
+or proof that its explanation is correct. It counts under **Agent 已回应**, including **提出异议**.
+The external observer count remains separate. Missing response records cannot establish non-receipt,
+and neither kind of receipt proves correction. Old unrecorded replies are not backfilled from guesses.

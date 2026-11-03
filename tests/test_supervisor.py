@@ -60,6 +60,45 @@ class SupervisorTests(unittest.TestCase):
     def cooldown(self):
         s=self.state();s['supervisor']['last_dispatch_at']=0;self.save(s)
 
+    def test_preflight_capacity_is_visible_without_reservation_and_recovery_clears_error(self):
+        import report
+        self.change();self.dispatch()
+        packet={'user_sources':[], 'actions':[], 'interpretation':None}
+        error=review.packet_context.PacketCapacityError(packet,1)
+        with patch.object(review,'make_packet',side_effect=error):
+            self.run_worker()
+        state=self.state()
+        self.assertEqual(state['budget']['reviews_used'],0)
+        self.assertIsNone(state['supervisor']['worker'])
+        status=supervisor.status(self.data,self.session)
+        self.assertFalse(status['runtime']['eligible'])
+        self.assertIn('review_packet_capacity',status['runtime']['unavailable_reasons'])
+        self.assertIn('未调用模型',report.generate(self.data,self.session)['user_summary'])
+        self.cooldown();self.dispatch()
+        self.assertEqual(len(self.launched),1)  # same failed evidence is not retried indefinitely
+        self.change('title=changed again\nbackend=wired\n');self.dispatch();self.run_worker()
+        self.assertEqual(self.state()['budget']['reviews_used'],1)
+        self.assertNotIn('last_dispatch_error',self.state()['supervisor'])
+        self.assertTrue(supervisor.status(self.data,self.session)['runtime']['last_completed_review_at'])
+
+    def test_old_failed_attempt_recovers_once_after_plugin_version_change(self):
+        self.change()
+        state=self.state();state['supervisor'].update(last_attempt=supervisor.candidate(state)['identity'],
+            last_status='unavailable_no_retry',last_attempt_version='old')
+        self.save(state)
+        self.assertIn('previous_dispatch_failed',supervisor.status(self.data,self.session)['runtime']['unavailable_reasons'])
+        self.dispatch();self.run_worker();self.cooldown();self.dispatch()
+        self.assertEqual(len(self.launched),1)
+        self.assertEqual(self.state()['budget']['reviews_used'],1)
+
+    def test_project_rule_change_permits_new_checkpoint_without_file_change(self):
+        self.change();self.dispatch();self.run_worker();self.cooldown()
+        (self.work/'CLAUDE.md').write_text('Maintain docs for the authorized repair; no added product scope.')
+        self.assertIsNone(reminders.on_hook(self.data,self.payload('PreToolUse')))
+        self.assertEqual(next(iter(self.entries().values()))['reason'],'project_guidance_changed')
+        self.dispatch();self.run_worker()
+        self.assertEqual(self.state()['budget']['reviews_used'],2)
+
     def test_long_task_three_minute_boundary_ignores_old_hourly_usage(self):
         import time
         supervisor.configure(self.data,self.session,True,profile='long-task')

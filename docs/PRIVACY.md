@@ -7,7 +7,9 @@ not anonymous telemetry. Navi does not operate a separate telemetry endpoint.
 Task input capture requires workspace opt-in. Asking Navi to supervise the current task authorizes its
 normal bounded observation and same-conversation requirement import, subject to explicit user restrictions.
 The skill enables the separate capture/history controls for that task; installation alone does not. Opted-in records can contain user messages, source code, absolute
-paths, command inputs/outputs and selected same-conversation replies. Keep the plugin data directory
+paths, command inputs/outputs and selected same-conversation replies. Enabled observation also reads
+bounded workspace-root `AGENTS.md`, `AGENTS.override.md` and `CLAUDE.md` as supporting project guidance;
+available contents may be included in reviewer requests. It does not search parent or nested directories. Keep the plugin data directory
 and any exported reports private.
 
 ## Local storage and external inference
@@ -19,6 +21,12 @@ is local-only. Provider/account data policies still apply.
 
 Raw tool logs, model chain-of-thought and compaction summaries are not imported as user authorization.
 Unknown message provenance is a gap, not permission to reconstruct or invent user requirements.
+
+For paginated logs, Navi resolves filenames only for host-declared ancestor IDs in the same session
+store, validates their session identity, and reads the referenced prefixes. Archived segments are
+decompressed into private temporary directories and removed after reading. Excluded tail messages are
+used only to match already-recorded live submissions across restarts. Attachment paths/text may occur
+in the original user message, but image bytes are neither opened nor sent to the reviewer.
 
 ## Report exports
 
